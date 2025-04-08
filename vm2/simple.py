@@ -13,6 +13,11 @@ from PIL import Image, ImageTk
 import urllib.request
 import os
 import json
+import random
+import joblib
+from sklearn.preprocessing import LabelEncoder
+import numpy as np
+import re  # For IP address regex matching
 
 # Flask application for proxy
 app = Flask(__name__)
@@ -26,7 +31,7 @@ log_lock = threading.Lock()
 class ProxyDashboard:
     def __init__(self, root):
         self.root = root
-        self.root.title("Proxy Dashboard with IP Location")
+        self.root.title("Proxy Dashboard with Anomaly Detection")
         self.root.geometry("1200x800")
         self.root.configure(bg="#2e2e2e")
         
@@ -51,6 +56,14 @@ class ProxyDashboard:
         
         # Set up Phone tab
         self.setup_phone_tab()
+        
+        # Initialize anomaly detector
+        self.detector = AnomalyDetector()
+        
+        # Add anomaly log tab
+        self.anomaly_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.anomaly_tab, text="Anomaly Log")
+        self.setup_anomaly_tab()
         
         # IP tracking variables
         self.ip_data = {}  # Store IP details for logging
@@ -178,10 +191,53 @@ class ProxyDashboard:
         self.phone_map_canvas = tk.Canvas(map_frame, bg="white", width=400, height=400)
         self.phone_map_canvas.pack(fill=tk.BOTH, expand=True)
     
+    def setup_anomaly_tab(self):
+        """Setup the anomaly log tab with more detailed information"""
+        frame = ttk.Frame(self.anomaly_tab)
+        frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Stats frame at the top
+        stats_frame = tk.Frame(frame, bg="#363636")
+        stats_frame.pack(fill=tk.X, pady=5)
+        
+        tk.Label(stats_frame, text="Anomaly Statistics:", bg="#363636", fg="white").pack(side=tk.LEFT, padx=5)
+        self.total_anomalies_label = tk.Label(stats_frame, text="Total: 0", bg="#363636", fg="white")
+        self.total_anomalies_label.pack(side=tk.LEFT, padx=20)
+        
+        self.ddos_count_label = tk.Label(stats_frame, text="DDoS: 0", bg="#363636", fg="#ff5555")
+        self.ddos_count_label.pack(side=tk.LEFT, padx=20)
+        
+        # Add buttons for actions
+        actions_frame = tk.Frame(frame)
+        actions_frame.pack(fill=tk.X, pady=5)
+        
+        self.block_ip_button = tk.Button(actions_frame, text="Block Selected IP", command=self.block_selected_ip)
+        self.block_ip_button.pack(side=tk.RIGHT, padx=5)
+        
+        self.clear_anomalies_button = tk.Button(actions_frame, text="Clear Anomaly Log", command=self.clear_anomaly_log)
+        self.clear_anomalies_button.pack(side=tk.RIGHT, padx=5)
+        
+        # Main log area
+        tk.Label(frame, text="Detected Anomalies:").pack(anchor=tk.W)
+        
+        self.anomaly_text = scrolledtext.ScrolledText(frame, height=25)
+        self.anomaly_text.pack(fill=tk.BOTH, expand=True)
+        self.anomaly_text.config(state=tk.DISABLED)
+        
+        # Configure tags for coloring
+        self.anomaly_text.tag_config('DDoS', foreground='red')
+        self.anomaly_text.tag_config('Service_Attack', foreground='orange')
+        self.anomaly_text.tag_config('Anomalous_Traffic', foreground='purple')
+        self.anomaly_text.tag_config('Suspicious_Rate', foreground='blue')
+        self.anomaly_text.tag_config('normal', foreground='green')
+        
+        # Initialize counters
+        self.anomaly_counts = {'total': 0, 'DDoS': 0, 'Service_Attack': 0, 'Anomalous_Traffic': 0, 'Suspicious_Rate': 0}
+
     def lookup_latest_ip(self):
         """Look up the most recent IP address from logs"""
         latest_ip = self.latest_ip_label.cget("text")
-        if latest_ip != "None":
+        if (latest_ip != "None"):
             self.ip_entry.delete(0, tk.END)
             self.ip_entry.insert(0, latest_ip)
             self.lookup_ip()
@@ -364,6 +420,80 @@ class ProxyDashboard:
         # If we get here, we couldn't get the location
         self.latest_location_label.config(text="Location lookup failed")
 
+    def log_anomaly(self, ip_address, anomalies, request_data):
+        """Log detected anomalies with enhanced information"""
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        self.anomaly_text.config(state=tk.NORMAL)
+        
+        if anomalies:
+            # Update anomaly counters
+            self.anomaly_counts['total'] += 1
+            for anomaly_type in anomalies:
+                if anomaly_type in self.anomaly_counts:
+                    self.anomaly_counts[anomaly_type] += 1
+            
+            # Create detailed log message
+            log_msg = f"[{timestamp}] ANOMALY from {ip_address}\n"
+            log_msg += f"  Types: {', '.join(anomalies)}\n"
+            log_msg += f"  Method: {request_data.get('method', 'N/A')}\n"
+            log_msg += f"  Path: {request_data.get('path', 'N/A')}\n"
+            log_msg += f"  Status: {request_data.get('status_code', 'N/A')}\n"
+            log_msg += f"  Content Length: {request_data.get('content_length', 0)}\n"
+            log_msg += "  ---\n"
+            
+            # Insert with color based on most severe anomaly
+            if 'DDoS' in anomalies:
+                self.anomaly_text.insert(tk.END, log_msg, 'DDoS')
+            elif 'Service_Attack' in anomalies:
+                self.anomaly_text.insert(tk.END, log_msg, 'Service_Attack')
+            elif 'Anomalous_Traffic' in anomalies:
+                self.anomaly_text.insert(tk.END, log_msg, 'Anomalous_Traffic')
+            elif 'Suspicious_Rate' in anomalies:
+                self.anomaly_text.insert(tk.END, log_msg, 'Suspicious_Rate')
+            else:
+                self.anomaly_text.insert(tk.END, log_msg)
+        else:
+            # For normal traffic, just add a simple entry with 5% probability
+            if random.random() < 0.05:  # Only log 5% of normal traffic to avoid clutter
+                log_msg = f"[{timestamp}] Normal traffic from {ip_address}\n"
+                self.anomaly_text.insert(tk.END, log_msg, 'normal')
+        
+        # Update stats
+        self.total_anomalies_label.config(text=f"Total: {self.anomaly_counts['total']}")
+        self.ddos_count_label.config(text=f"DDoS: {self.anomaly_counts['DDoS']}")
+        
+        self.anomaly_text.see(tk.END)
+        self.anomaly_text.config(state=tk.DISABLED)
+
+    def block_selected_ip(self):
+        """Block the selected IP address"""
+        try:
+            selected_text = self.anomaly_text.get("sel.first", "sel.last")
+            # Extract IP from selected text
+            ip_match = re.search(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', selected_text)
+            if ip_match:
+                ip = ip_match.group(0)
+                # Add to blocked list
+                with open('blocked_ips.txt', 'a') as f:
+                    f.write(f"{ip}\n")
+                messagebox.showinfo("IP Blocked", f"IP {ip} has been added to blocked list.")
+            else:
+                messagebox.showwarning("No IP Found", "No valid IP address found in selection.")
+        except tk.TclError:
+            messagebox.showwarning("No Selection", "Please select text containing an IP address.")
+
+    def clear_anomaly_log(self):
+        """Clear the anomaly log"""
+        self.anomaly_text.config(state=tk.NORMAL)
+        self.anomaly_text.delete(1.0, tk.END)
+        self.anomaly_text.config(state=tk.DISABLED)
+        
+        # Reset counters
+        self.anomaly_counts = {'total': 0, 'DDoS': 0, 'Service_Attack': 0, 'Anomalous_Traffic': 0, 'Suspicious_Rate': 0}
+        self.total_anomalies_label.config(text="Total: 0")
+        self.ddos_count_label.config(text="DDoS: 0")
+
 
 # Store client IPs for better tracking
 client_ips = {}
@@ -372,30 +502,33 @@ client_ips = {}
 @app.route('/', defaults={'path': ''})
 @app.route('/<path:path>', methods=['GET', 'POST', 'PUT', 'DELETE', 'PATCH'])
 def proxy(path):
-    """Forward all requests to Node.js server"""
-    # Log the request
+    """Forward all requests to Node.js server with anomaly detection"""
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     client_ip = request.remote_addr
     
-    # Extract client IP properly
     if client_ip == '127.0.0.1':
-        # Try to get the real IP from X-Forwarded-For header
         forwarded_for = request.headers.get('X-Forwarded-For')
         if forwarded_for:
             client_ip = forwarded_for.split(',')[0].strip()
     
-    log_entry = f"[{timestamp}] {request.method} /{path} from {client_ip}"
+    # Check if IP is blocked
+    try:
+        with open('blocked_ips.txt', 'r') as f:
+            blocked_ips = f.read().splitlines()
+            if client_ip in blocked_ips:
+                return "Access Denied - IP Blocked", 403
+    except FileNotFoundError:
+        pass
     
-    # Add to logs
-    with log_lock:
-        logs.append(log_entry)
-    
-    # Update client IP tracking
-    client_ips[client_ip] = timestamp
-    
-    # Update the GUI with the latest IP (if dashboard exists)
-    if 'dashboard' in globals():
-        dashboard.update_latest_ip(client_ip)
+    # Prepare request data for anomaly detection
+    request_data = {
+        'timestamp': timestamp,
+        'method': request.method,
+        'path': path,
+        'content_length': request.content_length or 0,
+        'is_encrypted': request.scheme == 'https',
+        'status_code': 200  # Will be updated after forwarding
+    }
     
     # Forward the request
     try:
@@ -408,17 +541,133 @@ def proxy(path):
             allow_redirects=False
         )
         
-        # Log the response
-        log_response = f"[{timestamp}] Response: {resp.status_code} for {request.method} /{path}"
+        # Update status code for anomaly detection
+        request_data['status_code'] = resp.status_code
+        
+        # Detect anomalies
+        anomalies = []
+        if 'dashboard' in globals():
+            anomalies = dashboard.detector.detect_anomalies(client_ip, request_data)
+            dashboard.log_anomaly(client_ip, anomalies, request_data)
+        
+        # Format log entry
+        if anomalies:
+            log_entry = f"[{timestamp}] ⚠️ ANOMALY ({', '.join(anomalies)}) {request.method} /{path} from {client_ip}, Status: {resp.status_code}"
+        else:
+            log_entry = f"[{timestamp}] {request.method} /{path} from {client_ip}, Status: {resp.status_code}"
+        
         with log_lock:
-            logs.append(log_response)
+            logs.append(log_entry)
+        
+        # Update dashboard with latest client info
+        client_ips[client_ip] = timestamp
+        if 'dashboard' in globals():
+            dashboard.update_latest_ip(client_ip)
         
         return (resp.content, resp.status_code, resp.headers.items())
+    
     except Exception as e:
         error_msg = f"[{timestamp}] ERROR: {str(e)} for {request.method} /{path}"
         with log_lock:
             logs.append(error_msg)
+        
+        # Still try to detect anomalies in error cases
+        if 'dashboard' in globals():
+            request_data['status_code'] = 500  # Assume server error
+            anomalies = dashboard.detector.detect_anomalies(client_ip, request_data)
+            dashboard.log_anomaly(client_ip, anomalies, request_data)
+        
         return f"Proxy Error: {str(e)}", 500
+
+class AnomalyDetector:
+    def __init__(self):
+        # Load all trained models
+        self.models = {
+            'DDoS': joblib.load('ddos_detector.pkl'),
+            'MITM': joblib.load('mitm_detector.pkl'),
+            'DNS_Spoofing': joblib.load('dns_spoofing_detector.pkl'),
+            'Data_Exfiltration': joblib.load('data_exfiltration_detector.pkl')
+        }
+        
+        # Store features needed for each model
+        self.model_features = {
+            'DDoS': ['source_ip_numeric', 'method', 'target_url', 'status_code', 'bytes_sent', 'hour', 'day_of_week'],
+            'MITM': ['source_ip_numeric', 'destination_ip_numeric', 'protocol', 'action', 'data_size', 'is_encrypted'],
+            'DNS_Spoofing': ['client_ip_numeric', 'query', 'response', 'response_type', 'ttl', 'hour'],
+            'Data_Exfiltration': ['source_ip_numeric', 'destination_ip_numeric', 'method', 'data_type', 'data_size', 'is_encrypted']
+        }
+        
+        # For IP conversion
+        self.ip_encoder = LabelEncoder()
+        
+    def prepare_features(self, ip_data, request_data):
+        """Prepare features for all models from the available data"""
+        features = {}
+        
+        # Convert IPs to numerical representation
+        features['source_ip_numeric'] = int(''.join([f"{int(n):03d}" for n in ip_data['query'].split('.')][:3])) if 'query' in ip_data else 0
+        features['destination_ip_numeric'] = int(''.join([f"{int(n):03d}" for n in ip_data['status'].split('.')][:3])) if 'status' in ip_data else 0
+        features['client_ip_numeric'] = features['source_ip_numeric']
+        
+        # Add basic request features
+        features['method'] = request_data.get('method', 'GET')
+        features['protocol'] = request_data.get('protocol', 'HTTP')
+        features['data_size'] = request_data.get('content_length', 0)
+        
+        # Add temporal features
+        now = datetime.datetime.now()
+        features['hour'] = now.hour
+        features['day_of_week'] = now.weekday()
+        
+        # Add dummy values for other required features
+        features['target_url'] = request_data.get('path', '/')
+        features['status_code'] = 200  # Default
+        features['action'] = 'Normal'
+        features['is_encrypted'] = request_data.get('is_encrypted', False)
+        features['query'] = request_data.get('path', '/').split('/')[-1]
+        features['response'] = '192.168.1.1'  # Default
+        features['response_type'] = 'A'
+        features['ttl'] = 300
+        features['data_type'] = 'Normal'
+        
+        return features
+    
+    def detect_anomalies(self, ip_address, request_data):
+        """Detect anomalies across all models"""
+        try:
+            # Get IP geolocation data
+            ip_data = self.get_ip_data(ip_address)
+            if not ip_data:
+                return []
+            
+            # Prepare features
+            features = self.prepare_features(ip_data, request_data)
+            
+            anomalies = []
+            for model_name, model in self.models.items():
+                # Get required features for this model
+                required_features = self.model_features[model_name]
+                X = np.array([[features[feat] for feat in required_features]]).reshape(1, -1)
+                
+                # Predict
+                prediction = model.predict(X)
+                if prediction[0] == 1:  # Anomaly detected
+                    anomalies.append(model_name)
+            
+            return anomalies
+        except Exception as e:
+            print(f"Anomaly detection error: {str(e)}")
+            return []
+
+    def get_ip_data(self, ip_address):
+        """Get IP geolocation data"""
+        try:
+            url = f'http://ip-api.com/json/{ip_address}'
+            response = requests.get(url, timeout=2)
+            if response.status_code == 200:
+                return response.json()
+        except:
+            return None
 
 def run_flask():
     """Run Flask in a separate thread"""
@@ -440,4 +689,3 @@ if __name__ == "__main__":
     globals()['dashboard'] = dashboard
     
     root.mainloop()
-    
