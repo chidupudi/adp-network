@@ -1,0 +1,1 @@
+{"numeric_columns": ["pktcount", "bytecount", "tx_kbps", "rx_kbps", "tot_kbps"], "categorical_columns": ["Protocol"], "derived_features": {"bytes_per_packet": "bytecount / pktcount", "flow_duration": "dur + dur_nsec/1e9", "byte_rate": "bytecount / flow_duration"}}

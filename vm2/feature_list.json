@@ -1,0 +1,1 @@
+["dt", "switch", "src", "dst", "pktcount", "bytecount", "dur", "dur_nsec", "tot_dur", "flows", "packetins", "pktperflow", "byteperflow", "pktrate", "Pairflow", "Protocol", "port_no", "tx_bytes", "rx_bytes", "tx_kbps", "rx_kbps", "tot_kbps", "bytes_per_packet", "flow_duration", "byte_rate"]
